@@ -13,7 +13,9 @@ class ProcessInfo:
     
     def __init__(self, pid: int, name: str, cpu_percent: float, memory_mb: float, 
                 status: str, priority: Optional[int] = None, threads: Optional[int] = None,
-                command_line: Optional[str] = None):
+                command_line: Optional[str] = None, username: str = "", memory_bytes: int = 0, 
+                memory_percent: float = 0, created_time: float = 0, num_threads: int = 0, 
+                exe_path: str = ""):
         self.pid = pid
         self.name = name
         self.cpu_percent = cpu_percent
@@ -22,6 +24,12 @@ class ProcessInfo:
         self.priority = priority
         self.threads = threads
         self.command_line = command_line
+        self.username = username
+        self.memory_bytes = memory_bytes
+        self.memory_percent = memory_percent
+        self.created_time = created_time
+        self.num_threads = num_threads
+        self.exe_path = exe_path
         self.is_critical = name.lower() in [p.lower() for p in CRITICAL_PROCESSES]
         self.is_suspicious = False
         
@@ -39,81 +47,105 @@ class ProcessInfo:
             "priority": self.priority,
             "threads": self.threads,
             "command_line": self.command_line,
+            "username": self.username,
+            "memory_bytes": self.memory_bytes,
+            "memory_percent": self.memory_percent,
+            "created_time": self.created_time,
+            "num_threads": self.num_threads,
+            "exe_path": self.exe_path,
             "is_critical": self.is_critical,
             "is_suspicious": self.is_suspicious
         }
 
-def get_process_list(detailed: bool = False) -> List[ProcessInfo]:
+def get_process_list(detailed: bool = False, limit: int = None) -> List[ProcessInfo]:
     """
-    Obtém lista de processos ativos no sistema
+    Obtém lista de processos ativos no sistema.
     
     Args:
-        detailed: Se True, inclui informações adicionais como prioridade e linha de comando
-        
-    Returns:
-        Uma lista de objetos ProcessInfo
-    """
-    processes = []
+        detailed: Se True, obtém informações detalhadas (mais lento)
+        limit: Limite de processos a retornar (None para todos)
     
-    # Obtém lista de todos os processos
-    for proc in psutil.process_iter(['pid', 'name', 'status']):
-        try:
-            # Informações básicas do processo
-            proc_info = proc.info
-            pid = proc_info['pid']
-            name = proc_info['name']
-            status_raw = proc_info['status']
-            
-            # Mapeamento do status para formato legível
-            status_map = {
-                psutil.STATUS_RUNNING: "Ativo",
-                psutil.STATUS_SLEEPING: "Inativo",
-                psutil.STATUS_DISK_SLEEP: "Disco",
-                psutil.STATUS_STOPPED: "Parado",
-                psutil.STATUS_ZOMBIE: "Zumbi",
-                psutil.STATUS_DEAD: "Morto",
-            }
-            status = status_map.get(status_raw, "Desconhecido")
-            
-            # Cálculo de uso de CPU e memória
-            with proc.oneshot():  # Melhora a performance consultando tudo de uma vez
-                try:
-                    cpu_percent = proc.cpu_percent(interval=0.1)
-                    memory_info = proc.memory_info()
-                    memory_mb = memory_info.rss / (1024 * 1024)  # Converte para MB
+    Returns:
+        Lista de objetos ProcessInfo
+    """
+    process_list = []
+    
+    try:
+        # Obtém lista de PIDs
+        pids = psutil.pids()
+        
+        # Limita o número de processos se especificado
+        if limit is not None and limit > 0:
+            pids = pids[:limit]
+        
+        for pid in pids:
+            try:
+                # Obtém objeto de processo
+                process = psutil.Process(pid)
+                
+                # Coleta informações básicas
+                name = process.name()
+                status = process.status()
+                
+                if detailed:
+                    # Coleta informações detalhadas (mais lento)
+                    username = process.username()
+                    cpu_percent = process.cpu_percent(interval=None)
+                    memory_info = process.memory_info()
+                    memory_percent = process.memory_percent()
+                    created_time = process.create_time()
+                    num_threads = process.num_threads()
                     
-                    # Informações adicionais para o modo detalhado
-                    if detailed:
-                        priority = proc.nice()
-                        threads = proc.num_threads()
+                    # Para processos do Windows, obtém informações adicionais
+                    if sys.platform == "win32":
                         try:
-                            command_line = " ".join(proc.cmdline())
-                        except:
-                            command_line = "N/A"
+                            priority = process.nice()
+                        except (psutil.AccessDenied, psutil.Error):
+                            priority = None
                     else:
                         priority = None
-                        threads = None
-                        command_line = None
                     
-                    # Cria objeto com as informações do processo
-                    process = ProcessInfo(
-                        pid=pid,
-                        name=name,
-                        cpu_percent=cpu_percent,
-                        memory_mb=memory_mb,
-                        status=status,
-                        priority=priority,
-                        threads=threads,
-                        command_line=command_line
-                    )
-                    
-                    processes.append(process)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+                    try:
+                        exe_path = process.exe()
+                    except (psutil.AccessDenied, psutil.Error):
+                        exe_path = ""
+                else:
+                    # Versão simplificada (mais rápida)
+                    username = ""
+                    cpu_percent = 0
+                    memory_info = None
+                    memory_percent = 0
+                    created_time = process.create_time()
+                    num_threads = 0
+                    priority = None
+                    exe_path = ""
+                
+                # Cria objeto ProcessInfo
+                proc_info = ProcessInfo(
+                    pid=pid,
+                    name=name,
+                    status=status,
+                    username=username,
+                    cpu_percent=cpu_percent,
+                    memory_mb=memory_info.rss / (1024 * 1024) if memory_info else 0,
+                    memory_bytes=memory_info.rss if memory_info else 0,
+                    memory_percent=memory_percent,
+                    created_time=created_time,
+                    num_threads=num_threads,
+                    priority=priority,
+                    exe_path=exe_path
+                )
+                
+                process_list.append(proc_info)
+                
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Ignora processos que não existem mais ou sem permissão
+                continue
+    except Exception as e:
+        # Loga erro em caso de falha
+        print(f"Erro ao obter lista de processos: {str(e)}")
     
-    return processes
+    return process_list
 
 def terminate_process(pid: int) -> Tuple[bool, str]:
     """
@@ -149,7 +181,7 @@ def terminate_process(pid: int) -> Tuple[bool, str]:
     except psutil.NoSuchProcess:
         return False, f"Processo com PID {pid} não existe."
     except psutil.AccessDenied:
-        return False, f"Acesso negado ao tentar encerrar o processo PID {pid}. Execute como administrador."
+        return False, f"Acesso negado ao tentar encerrar o processo. Execute como administrador."
     except Exception as e:
         return False, f"Erro ao encerrar processo: {str(e)}"
 

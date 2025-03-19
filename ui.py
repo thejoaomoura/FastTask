@@ -28,7 +28,7 @@ import utils
 from settings import (
     APP_NAME, APP_VERSION, DEFAULT_UPDATE_INTERVAL, 
     DEFAULT_THEME, COLORS, WINDOW_SIZE, CRITICAL_PROCESSES,
-    DEFAULT_VIEW_MODE
+    DEFAULT_VIEW_MODE, PROCESS_FETCH_LIMIT, ENABLE_GRAPHS, LAZY_LOADING
 )
 
 # Configurações de estilo
@@ -46,32 +46,141 @@ class ProcessTableWidget(QTableWidget):
         """Inicializa a tabela de processos"""
         super().__init__(parent)
         
-        # Define cabeçalhos da tabela
+        # Configuração inicial
         self.setColumnCount(6)
-        self.setHorizontalHeaderLabels(["Nome", "PID", "CPU %", "RAM (MB)", "Status", "Prioridade"])
-        
-        # Configuração de aparência
-        self.setAlternatingRowColors(True)
+        self.setHorizontalHeaderLabels([
+            "Nome", "PID", "Status", "CPU %", "Memória", "Usuário"
+        ])
         self.setSelectionBehavior(QTableWidget.SelectRows)
         self.setSelectionMode(QTableWidget.SingleSelection)
-        self.setEditTriggers(QTableWidget.NoEditTriggers)
         self.setShowGrid(True)
         self.setSortingEnabled(True)
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setStretchLastSection(True)
         
-        # Conecta sinal de seleção
+        # Configura dimensões das colunas
+        self.setColumnWidth(0, 200)  # Nome
+        self.setColumnWidth(1, 60)   # PID
+        self.setColumnWidth(2, 80)   # Status
+        self.setColumnWidth(3, 80)   # CPU
+        self.setColumnWidth(4, 100)  # Memória
+        
+        # Conecta sinais
         self.itemSelectionChanged.connect(self._on_selection_changed)
-        
-        # Configura menu de contexto
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         
-        # Configura largura das colunas
-        self.setColumnWidth(0, 200)  # Nome
-        self.setColumnWidth(1, 80)   # PID
-        self.setColumnWidth(2, 80)   # CPU
-        self.setColumnWidth(3, 100)  # RAM
-        self.setColumnWidth(4, 100)  # Status
-        self.setColumnWidth(5, 100)  # Prioridade
+        # Estado interno
+        self.processes = []
+        self.detailed_mode = False
+        self.pid_row_map = {}
+        
+    def update_processes(self, processes: List[process_manager.ProcessInfo], detailed_mode: bool = False):
+        """
+        Atualiza a lista de processos exibida
+        
+        Args:
+            processes: Lista de objetos ProcessInfo
+            detailed_mode: Se True, exibe informações detalhadas
+        """
+        # Armazena dados
+        self.processes = processes
+        self.detailed_mode = detailed_mode
+        
+        # Armazena seleção atual
+        selected_pid = None
+        selected_items = self.selectedItems()
+        if selected_items:
+            selected_row = selected_items[0].row()
+            selected_pid = int(self.item(selected_row, 1).text())
+        
+        # Desativa ordenação temporariamente
+        sorting_enabled = self.isSortingEnabled()
+        self.setSortingEnabled(False)
+        
+        # Limpa tabela e atualiza número de linhas
+        self.clearContents()
+        self.setRowCount(len(processes))
+        
+        # Atualiza cabeçalhos se necessário
+        if detailed_mode and self.columnCount() < 8:
+            self.setColumnCount(8)
+            self.setHorizontalHeaderLabels([
+                "Nome", "PID", "Status", "CPU %", "Memória", "Usuário", 
+                "Threads", "Prioridade"
+            ])
+        elif not detailed_mode and self.columnCount() > 6:
+            self.setColumnCount(6)
+            self.setHorizontalHeaderLabels([
+                "Nome", "PID", "Status", "CPU %", "Memória", "Usuário"
+            ])
+        
+        # Cria mapeamento de PID para linha para seleção posterior
+        self.pid_row_map = {}
+        
+        # Preenche tabela
+        for row, proc in enumerate(processes):
+            # Guarda mapeamento entre PID e linha
+            self.pid_row_map[proc.pid] = row
+            
+            # Nome do processo
+            name_item = QTableWidgetItem(proc.name)
+            name_item.setToolTip(proc.exe_path if hasattr(proc, 'exe_path') and proc.exe_path else proc.name)
+            if proc.is_critical:
+                name_item.setForeground(QColor(COLORS["critical"]))
+            self.setItem(row, 0, name_item)
+            
+            # PID
+            pid_item = QTableWidgetItem(str(proc.pid))
+            pid_item.setTextAlignment(Qt.AlignCenter)
+            self.setItem(row, 1, pid_item)
+            
+            # Status
+            status_item = QTableWidgetItem(proc.status)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            if proc.status == "Ativo":
+                status_item.setForeground(QColor("green"))
+            elif proc.status == "Parado":
+                status_item.setForeground(QColor("red"))
+            self.setItem(row, 2, status_item)
+            
+            # CPU
+            cpu_item = QTableWidgetItem(f"{proc.cpu_percent:.1f}%")
+            cpu_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if proc.cpu_percent > 80:
+                cpu_item.setBackground(QColor(255, 150, 150))
+            elif proc.cpu_percent > 50:
+                cpu_item.setBackground(QColor(255, 220, 150))
+            self.setItem(row, 3, cpu_item)
+            
+            # Memória
+            memory_str = utils.format_size(proc.memory_bytes if hasattr(proc, 'memory_bytes') else proc.memory_mb * 1024 * 1024)
+            memory_item = QTableWidgetItem(memory_str)
+            memory_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.setItem(row, 4, memory_item)
+            
+            # Usuário
+            user_item = QTableWidgetItem(proc.username if hasattr(proc, 'username') else "-")
+            self.setItem(row, 5, user_item)
+            
+            # Campos adicionais para modo detalhado
+            if detailed_mode:
+                # Threads
+                thread_item = QTableWidgetItem(str(proc.num_threads if hasattr(proc, 'num_threads') else proc.threads))
+                thread_item.setTextAlignment(Qt.AlignCenter)
+                self.setItem(row, 6, thread_item)
+                
+                # Prioridade
+                priority_item = QTableWidgetItem(str(proc.priority) if proc.priority is not None else "N/A")
+                priority_item.setTextAlignment(Qt.AlignCenter)
+                self.setItem(row, 7, priority_item)
+        
+        # Restaura ordenação
+        self.setSortingEnabled(sorting_enabled)
+        
+        # Restaura seleção
+        if selected_pid in self.pid_row_map:
+            self.selectRow(self.pid_row_map[selected_pid])
     
     def _on_selection_changed(self):
         """Manipula mudança na seleção de linha"""
@@ -159,114 +268,6 @@ class ProcessTableWidget(QTableWidget):
             QMessageBox.information(self, "Prioridade Alterada", message)
         else:
             QMessageBox.warning(self, "Erro", message)
-    
-    def update_processes(self, processes: List[process_manager.ProcessInfo], view_mode: str = "compacto"):
-        """
-        Atualiza a tabela com a lista de processos
-        
-        Args:
-            processes: Lista de objetos ProcessInfo
-            view_mode: Modo de visualização ('compacto' ou 'detalhado')
-        """
-        # Desativa ordenação temporariamente para melhorar performance
-        self.setSortingEnabled(False)
-        
-        # Guarda a posição atual da barra de rolagem
-        scrollbar = self.verticalScrollBar()
-        scroll_position = scrollbar.value()
-        
-        # Guarda PID selecionado atualmente
-        selected_pid = None
-        selected_items = self.selectedItems()
-        if selected_items:
-            row = selected_items[0].row()
-            pid_item = self.item(row, 1)
-            if pid_item:
-                selected_pid = int(pid_item.text())
-        
-        # Limpa a tabela
-        self.setRowCount(0)
-        
-        # Verifica o modo de visualização
-        if view_mode == "detalhado":
-            # Adiciona colunas extras para o modo detalhado
-            if self.columnCount() < 7:
-                self.setColumnCount(7)
-                self.setHorizontalHeaderLabels([
-                    "Nome", "PID", "CPU %", "RAM (MB)", 
-                    "Status", "Prioridade", "Threads"
-                ])
-        else:
-            # Remove colunas extras no modo compacto
-            if self.columnCount() > 6:
-                self.setColumnCount(6)
-                self.setHorizontalHeaderLabels([
-                    "Nome", "PID", "CPU %", "RAM (MB)", 
-                    "Status", "Prioridade"
-                ])
-        
-        # Adiciona processos à tabela
-        for i, proc in enumerate(processes):
-            # Adiciona nova linha
-            self.insertRow(i)
-            
-            # Nome do processo
-            name_item = QTableWidgetItem(proc.name)
-            # Destaca processos críticos ou suspeitos
-            if proc.is_critical:
-                name_item.setForeground(QColor("blue"))
-                name_item.setToolTip("Processo Crítico do Sistema")
-            elif proc.is_suspicious:
-                name_item.setForeground(QColor("red"))
-                name_item.setToolTip("Uso Suspeito de Recursos")
-            
-            # Adiciona itens às células
-            self.setItem(i, 0, name_item)
-            self.setItem(i, 1, QTableWidgetItem(str(proc.pid)))
-            
-            # CPU com formatação de cor baseada no uso
-            cpu_item = QTableWidgetItem(f"{proc.cpu_percent:.1f}")
-            if proc.cpu_percent > 70:
-                cpu_item.setForeground(QColor("red"))
-            elif proc.cpu_percent > 30:
-                cpu_item.setForeground(QColor("orange"))
-            self.setItem(i, 2, cpu_item)
-            
-            # RAM com formatação
-            ram_item = QTableWidgetItem(f"{proc.memory_mb:.1f}")
-            if proc.memory_mb > 500:
-                ram_item.setForeground(QColor("red"))
-            elif proc.memory_mb > 200:
-                ram_item.setForeground(QColor("orange"))
-            self.setItem(i, 3, ram_item)
-            
-            # Status e Prioridade
-            self.setItem(i, 4, QTableWidgetItem(proc.status))
-            
-            # Prioridade
-            priority_text = "Normal"
-            if proc.priority is not None:
-                if proc.priority < 0:
-                    priority_text = "Baixa"
-                elif proc.priority > 0:
-                    priority_text = "Alta"
-                elif proc.priority > 15:
-                    priority_text = "Tempo Real"
-            self.setItem(i, 5, QTableWidgetItem(priority_text))
-            
-            # Adiciona threads no modo detalhado
-            if view_mode == "detalhado" and proc.threads is not None:
-                self.setItem(i, 6, QTableWidgetItem(str(proc.threads)))
-            
-            # Restaura seleção se o processo estava selecionado
-            if selected_pid and proc.pid == selected_pid:
-                self.selectRow(i)
-        
-        # Reativa ordenação
-        self.setSortingEnabled(True)
-        
-        # Restaura posição da barra de rolagem
-        scrollbar.setValue(scroll_position)
 
 class SystemInfoWidget(QWidget):
     """Widget para exibir informações do sistema"""
@@ -579,51 +580,58 @@ class StartProcessDialog(QWidget):
             QMessageBox.warning(self, "Erro", message)
 
 class MainWindow(QMainWindow):
-    """Janela principal do aplicativo"""
+    """Janela principal da aplicação"""
     
     def __init__(self):
         """Inicializa a janela principal"""
         super().__init__()
         
-        # Configura a janela
+        # Configura janela
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(*WINDOW_SIZE)
+        self.setMinimumSize(800, 600)
         
-        # Inicializa variáveis de estado
-        self.processes = []
-        self.selected_pid = None
+        # Define estado inicial
+        self.is_updating = False
         self.view_mode = DEFAULT_VIEW_MODE
-        self.update_interval = DEFAULT_UPDATE_INTERVAL
+        self.detailed_mode = self.view_mode == "detalhado"
+        self.search_text = ""
         self.monitor = monitoring.SystemMonitor()
+        self.update_interval = DEFAULT_UPDATE_INTERVAL
+        self.selected_pid = None
+        self.processes = []
         
-        # Cria widgets e layout principal
+        # Interface principal
         self._create_layout()
+        self._create_menu()
+        self._create_status_bar()
         
-        # Cria menus e barra de ferramentas
-        self._create_menus()
-        
-        # Cria barra de status
-        self.statusBar = QStatusBar()
-        self.admin_label = QLabel()
-        self.statusBar.addPermanentWidget(self.admin_label)
-        self.setStatusBar(self.statusBar)
-        
-        # Verifica se está sendo executado como administrador
-        if utils.is_admin():
-            self.admin_label.setText("Administrador")
-            self.admin_label.setStyleSheet("color: green; font-weight: bold;")
-        else:
-            self.admin_label.setText("Usuário Normal")
-            self.admin_label.setStyleSheet("color: orange;")
-            self.statusBar.showMessage("Execute como administrador para acesso completo", 5000)
-        
-        # Configura timer para atualização periódica
-        self.update_timer = QTimer(self)
+        # Timer de atualização
+        self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_data)
-        self.update_timer.start(self.update_interval * 1000)
+        self.set_update_interval(DEFAULT_UPDATE_INTERVAL)
         
-        # Realiza primeira atualização de dados
-        self.update_data()
+        # Atualização inicial
+        if not LAZY_LOADING:
+            self.update_data()
+        else:
+            # Em modo de carregamento preguiçoso, apenas busca dados básicos primeiro
+            self.status_bar.showMessage("Carregando processos...", 2000)
+            QTimer.singleShot(100, self._initial_load)
+    
+    def _initial_load(self):
+        """Realiza carregamento inicial com menos processos"""
+        try:
+            # Carrega apenas processos mais importantes primeiro
+            processes = process_manager.get_process_list(detailed=False, limit=PROCESS_FETCH_LIMIT)
+            self.process_table.update_processes(processes)
+            
+            # Inicia o timer de atualização após o carregamento inicial
+            QTimer.singleShot(1000, lambda: self.update_timer.start())
+            
+            self.status_bar.showMessage("Pronto", 2000)
+        except Exception as e:
+            self.status_bar.showMessage(f"Erro ao carregar processos: {str(e)}", 5000)
     
     def _create_layout(self):
         """Cria o layout principal e widgets"""
@@ -704,7 +712,7 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(splitter)
     
-    def _create_menus(self):
+    def _create_menu(self):
         """Cria menus e ações"""
         # Barra de menu
         menu_bar = self.menuBar()
@@ -749,7 +757,7 @@ class MainWindow(QMainWindow):
             interval_action.setCheckable(True)
             interval_action.setChecked(self.update_interval == interval)
             interval_action.triggered.connect(
-                lambda checked, i=interval: self._set_update_interval(i)
+                lambda checked, i=interval: self.set_update_interval(i)
             )
             update_menu.addAction(interval_action)
         
@@ -769,36 +777,61 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
     
+    def _create_status_bar(self):
+        """Cria barra de status"""
+        self.status_bar = QStatusBar()
+        self.admin_label = QLabel()
+        self.status_bar.addPermanentWidget(self.admin_label)
+        self.setStatusBar(self.status_bar)
+        
+        # Verifica se está sendo executado como administrador
+        if utils.is_admin():
+            self.admin_label.setText("Administrador")
+            self.admin_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.admin_label.setText("Usuário Normal")
+            self.admin_label.setStyleSheet("color: orange;")
+            self.status_bar.showMessage("Execute como administrador para acesso completo", 5000)
+    
     def update_data(self):
         """Atualiza todos os dados exibidos"""
-        # Obtém lista de processos
-        self.processes = process_manager.get_process_list(
-            detailed=(self.view_mode == "detalhado")
-        )
-        
-        # Filtra e ordena processos
-        filtered_processes = self._apply_filter(self.processes)
-        
-        # Atualiza tabela
-        self.process_table.update_processes(filtered_processes, self.view_mode)
-        
-        # Obtém informações do sistema
-        system_info = process_manager.get_system_info()
-        
-        # Atualiza widget de informações
-        self.system_info.update_info(system_info, len(self.processes))
-        
-        # Atualiza gráficos
-        monitor_data = self.monitor.update()
-        self.graphs.update_graph(monitor_data)
-        
-        # Atualiza barra de status
-        self.statusBar.showMessage(
-            f"Última atualização: {utils.format_timestamp(time.time())} | "
-            f"Processos: {len(self.processes)} | "
-            f"CPU: {monitor_data['current']['cpu']:.1f}% | "
-            f"RAM: {monitor_data['current']['ram']:.1f}%"
-        )
+        if self.is_updating:
+            return
+            
+        self.is_updating = True
+        try:
+            # Obtém lista de processos com base no modo de visualização
+            detailed = self.detailed_mode
+            self.processes = process_manager.get_process_list(detailed=detailed, limit=None)
+            
+            # Filtra processos de acordo com o texto de busca
+            if self.search_text:
+                search_text = self.search_text.lower()
+                self.processes = [p for p in self.processes if search_text in p.name.lower()]
+            
+            # Atualiza tabela de processos
+            self.process_table.update_processes(self.processes)
+            
+            # Atualiza informações do sistema
+            monitor_data = self.monitor.update()
+            self.system_info.update_info(monitor_data['current'])
+            
+            # Atualiza gráficos se estiverem habilitados
+            if ENABLE_GRAPHS:
+                self.graphs.update_graph(monitor_data)
+            
+            # Atualiza barra de status
+            self.status_bar.showMessage(
+                f"Última atualização: {utils.format_timestamp(time.time())} | "
+                f"Processos: {len(self.processes)} | "
+                f"CPU: {monitor_data['current']['cpu']:.1f}% | "
+                f"RAM: {monitor_data['current']['ram']:.1f}%", 
+                5000
+            )
+        except Exception as e:
+            utils.log_error(f"Erro na atualização de dados: {str(e)}")
+        finally:
+            self.is_updating = False
     
     def _apply_filter(self, processes: List[process_manager.ProcessInfo]) -> List[process_manager.ProcessInfo]:
         """
@@ -834,7 +867,7 @@ class MainWindow(QMainWindow):
         """Callback quando o filtro é alterado"""
         # Reaplica filtros e atualiza a tabela
         filtered_processes = self._apply_filter(self.processes)
-        self.process_table.update_processes(filtered_processes, self.view_mode)
+        self.process_table.update_processes(filtered_processes)
     
     def _on_process_selected(self, pid: int):
         """Callback quando um processo é selecionado"""
@@ -852,7 +885,7 @@ class MainWindow(QMainWindow):
         # Atualiza dados para refletir o novo modo
         self.update_data()
     
-    def _set_update_interval(self, interval: float):
+    def set_update_interval(self, interval: float):
         """Altera o intervalo de atualização"""
         self.update_interval = interval
         
@@ -860,7 +893,7 @@ class MainWindow(QMainWindow):
         self.update_timer.stop()
         self.update_timer.start(int(self.update_interval * 1000))
         
-        self.statusBar.showMessage(f"Intervalo de atualização alterado para {interval} segundos", 3000)
+        self.status_bar.showMessage(f"Intervalo de atualização alterado para {interval} segundos", 3000)
     
     def _terminate_selected_process(self):
         """Finaliza o processo selecionado"""
@@ -893,7 +926,7 @@ class MainWindow(QMainWindow):
     def _on_process_started(self, success: bool, message: str):
         """Callback quando um processo é iniciado"""
         if success:
-            self.statusBar.showMessage(message, 5000)
+            self.status_bar.showMessage(message, 5000)
             # Atualiza dados após uma pequena pausa
             QTimer.singleShot(500, self.update_data)
         else:
