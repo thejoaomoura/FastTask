@@ -11,6 +11,12 @@ DEFAULT_UPDATE_INTERVAL = 2  # Segundos
 MIN_UPDATE_INTERVAL = 0.5    # Intervalo mínimo
 MAX_UPDATE_INTERVAL = 10     # Intervalo máximo
 
+# Configurações de performance
+DEFAULT_UPDATE_INTERVAL = 2    # Intervalo de atualização em segundos
+PROCESS_FETCH_LIMIT = 100     # Limite de processos a serem exibidos inicialmente
+ENABLE_GRAPHS = True          # Ativar ou desativar gráficos
+LAZY_LOADING = True           # Carregamento preguiçoso de componentes pesados
+
 # Configurações da interface
 DEFAULT_THEME = "light"      # light ou dark
 DEFAULT_VIEW_MODE = "compacto"  # compacto ou detalhado
